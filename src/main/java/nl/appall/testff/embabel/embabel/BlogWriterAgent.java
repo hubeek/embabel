@@ -27,8 +27,10 @@ public class BlogWriterAgent {
     public BlogDraft writeDraft(UserInput userInput, Ai ai) {
 
         return ai
+//                .withLlm(LlmOptions.withDefaultLlm().withTemperature(.2))
                 .withDefaultLlm()
                 .withId("blog-post-draft-writer")
+                .withPromptContributor(Personas.WRITER)
                 .creating(BlogDraft.class)
                 .fromPrompt("""
                         You are a software developer and educator writing a blog post.
@@ -47,17 +49,19 @@ public class BlogWriterAgent {
                         """.formatted(userInput.getContent()));
     }
 
-    @AchievesGoal(description = "A reviewed and polished blog post.")
-    @Action(description = "Review and improve draft.")
-    public ReviewedPost reviewedDraft(BlogDraft draft, Ai ai) {
-        ReviewedPost reviewed =  ai.withLlmByRole("reviewer")
+    @AchievesGoal(description = "A reviewed and polished blog post")
+    @Action(description = "Review and improve the draft")
+    public ReviewedPost reviewDraft(BlogDraft draft, Ai ai) {
+        ReviewedPost reviewed = ai
+                .withLlmByRole("reviewer")
                 .withId("blog-post-reviewer")
+                .withPromptContributor(Personas.REVIEWER)
                 .creating(ReviewedPost.class)
                 .fromPrompt("""
                         You are a technical editor. Review and improve this blog post.
 
-                        Titel: %s
-                        Content: 
+                        Title: %s
+                        Content:
                         %s
 
                         Fix any technical errors. Thighten the writing.
