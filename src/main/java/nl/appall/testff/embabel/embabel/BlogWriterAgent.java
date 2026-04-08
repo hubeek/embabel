@@ -7,6 +7,7 @@ import com.embabel.agent.api.annotation.Agent;
 import com.embabel.agent.api.common.Ai;
 import com.embabel.agent.domain.io.UserInput;
 import com.embabel.common.ai.model.LlmOptions;
+import com.embabel.common.ai.model.ModelProvider;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -20,21 +21,25 @@ public class BlogWriterAgent {
     private final BlogAgentProperties properties;
     private final String writerModel;
     private final String reviewerModel;
+    private final ModelProvider modelProvider;
 
-    public BlogWriterAgent(BlogAgentProperties properties, ModelsProperties modelsProperties) {
+    public BlogWriterAgent(BlogAgentProperties properties, ModelsProperties modelsProperties, ModelProvider modelProvider) {
         this.properties = properties;
         this.writerModel = modelsProperties.getDefaultLlm();
         this.reviewerModel = modelsProperties.getLlms().getReviewer();
+        this.modelProvider = modelProvider;
     }
 
 
     @Action(description = "Write a first draft of the blogpost.")
-    public BlogDraft writeDraft(UserInput userInput, Ai ai) {
+    public DraftWithUsage writeDraft(UserInput userInput, Ai ai) {
 
-        return ai
+        LlmUsageCollector usageCollector = new LlmUsageCollector();
+        BlogDraft draft = ai
                 .withLlm(LlmOptions.withDefaultLlm().withTemperature(0.0))
                 .withId("blog-post-draft-writer")
                 .withPromptContributor(Personas.WRITER)
+                .withToolLoopInspectors(usageCollector)
                 .creating(BlogDraft.class)
                 .fromPrompt("""
                         You are a software developer and educator writing a blog post.
@@ -54,16 +59,17 @@ public class BlogWriterAgent {
                         Before responding, validate that the JSON parses (RFC8259). If invalid, fix it.
 
                         """.formatted(userInput.getContent()));
+        return new DraftWithUsage(draft, usageCollector.snapshot());
     }
 
     @AchievesGoal(description = "A reviewed and polished blog post")
     @Action(description = "Review and improve the draft")
-    public ReviewedPost reviewDraft(BlogDraft draft, Ai ai) {
+    public ReviewedPost reviewDraft(DraftWithUsage draftWithUsage, Ai ai) {
         UsageMetadata usage = new UsageMetadata();
 
-        // Track writer call tokens (estimate based on content)
-        long writerPromptTokens = estimateTokens(draft.title() + draft.content());
-        usage.addUsage(2266, writerPromptTokens); // 2266 from example, completion tokens from content
+        BlogDraft draft = draftWithUsage.draft();
+        UsageSnapshot draftUsage = draftWithUsage.usage();
+        usage.addUsage(writerModel, draftUsage.promptTokens(), draftUsage.completionTokens(), draftUsage.calls());
 
         String reviewPrompt = """
                         You are a technical editor. Review and improve this blog post.
@@ -85,25 +91,29 @@ public class BlogWriterAgent {
 
                         """.formatted(draft.title(), draft.content());
 
+        LlmUsageCollector usageCollector = new LlmUsageCollector();
         ReviewedPost reviewed = ai
                 .withLlmByRole("reviewer")
                 .withId("blog-post-reviewer")
                 .withPromptContributor(Personas.REVIEWER)
+                .withToolLoopInspectors(usageCollector)
                 .creating(ReviewedPost.class)
                 .fromPrompt(reviewPrompt);
 
-        // Track reviewer call tokens
-        long reviewerPromptTokens = estimateTokens(reviewPrompt);
-        long reviewerCompletionTokens = estimateTokens(reviewed.content() + reviewed.feedback());
-        usage.addUsage(reviewerPromptTokens, reviewerCompletionTokens);
+        UsageSnapshot reviewUsage = usageCollector.snapshot();
+        usage.addUsage(reviewerModel, reviewUsage.promptTokens(), reviewUsage.completionTokens(), reviewUsage.calls());
 
-        writeToFile(reviewed, usage);
-        return reviewed;
-    }
+        ReviewedPost enriched = new ReviewedPost(
+                reviewed.title(),
+                reviewed.content(),
+                reviewed.feedback(),
+                usage.getTotalPromptTokens(),
+                usage.getTotalCompletionTokens(),
+                usage.calculateCost(modelProvider)
+        );
 
-    private long estimateTokens(String text) {
-        // Rough estimate: 1 token per 4 characters for English text
-        return Math.max(1, text.length() / 4);
+        writeToFile(enriched, usage);
+        return enriched;
     }
 
     private void writeToFile(ReviewedPost post, UsageMetadata usage) {
@@ -123,7 +133,7 @@ public class BlogWriterAgent {
             String metadata = String.format("""
                     writer: %s
                     reviewer: %s
-                    LLMs used: [%s] across 2 calls
+                    LLMs used: [%s] across %d calls
                     Prompt tokens: %d
                     Completion tokens: %d
                     Cost: $%.4f
@@ -131,10 +141,11 @@ public class BlogWriterAgent {
                     """,
                     writerModel,
                     reviewerModel,
-                    writerModel,
+                    String.join(", ", usage.getModelsUsed()),
+                    usage.getTotalCalls(),
                     usage.getTotalPromptTokens(),
                     usage.getTotalCompletionTokens(),
-                    usage.calculateCost()
+                    usage.calculateCost(modelProvider)
             );
 
             String fullContent = metadata + post.content();
