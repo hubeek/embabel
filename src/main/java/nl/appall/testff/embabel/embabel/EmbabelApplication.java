@@ -7,7 +7,7 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.event.EventListener;
 
-@EnableConfigurationProperties(BlogAgentProperties.class)
+@EnableConfigurationProperties({BlogAgentProperties.class, ModelsProperties.class})
 @SpringBootApplication
 public class EmbabelApplication {
 
@@ -17,7 +17,7 @@ public class EmbabelApplication {
         this.ai = ai;
     }
 
-    static void main(String[] args) {
+    public static void main(String[] args) {
         SpringApplication.run(EmbabelApplication.class, args);
     }
 
