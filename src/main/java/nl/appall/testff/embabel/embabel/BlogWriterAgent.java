@@ -22,12 +22,15 @@ public class BlogWriterAgent {
     private final String writerModel;
     private final String reviewerModel;
     private final ModelProvider modelProvider;
+    private final JsonFixerTool jsonFixerTool;
 
-    public BlogWriterAgent(BlogAgentProperties properties, ModelsProperties modelsProperties, ModelProvider modelProvider) {
+    public BlogWriterAgent(BlogAgentProperties properties, ModelsProperties modelsProperties, ModelProvider modelProvider,
+                           JsonFixerTool jsonFixerTool) {
         this.properties = properties;
         this.writerModel = modelsProperties.getDefaultLlm();
         this.reviewerModel = modelsProperties.getLlms().getReviewer();
         this.modelProvider = modelProvider;
+        this.jsonFixerTool = jsonFixerTool;
     }
 
 
@@ -35,13 +38,12 @@ public class BlogWriterAgent {
     public DraftWithUsage writeDraft(UserInput userInput, Ai ai) {
 
         LlmUsageCollector usageCollector = new LlmUsageCollector();
-        BlogDraft draft = ai
+        String draftJson = ai
                 .withLlm(LlmOptions.withDefaultLlm().withTemperature(0.0))
                 .withId("blog-post-draft-writer")
                 .withPromptContributor(Personas.WRITER)
                 .withToolLoopInspectors(usageCollector)
-                .creating(BlogDraft.class)
-                .fromPrompt("""
+                .generateText("""
                         You are a software developer and educator writing a blog post.
                         Write a blog post about: %s
 
@@ -55,10 +57,9 @@ public class BlogWriterAgent {
                         Use \\n for line breaks inside "content". Do not use literal newlines.
                         Escape all double quotes inside "content" as \\\".
                         Escape all backslashes inside "content" as \\\\.
-                        Do not add any extra text, explanations, or markdown code fences.
-                        Before responding, validate that the JSON parses (RFC8259). If invalid, fix it.
 
                         """.formatted(userInput.getContent()));
+        BlogDraft draft = jsonFixerTool.parseBlogDraft(draftJson);
         return new DraftWithUsage(draft, usageCollector.snapshot());
     }
 
@@ -74,8 +75,7 @@ public class BlogWriterAgent {
         String reviewPrompt = """
                         You are a technical editor. Review and improve this blog post.
 
-                        Title: %s
-                        Content:
+                        Here is the draft as JSON:
                         %s
 
                         Fix any technical errors. Thighten the writing.
@@ -89,16 +89,16 @@ public class BlogWriterAgent {
                         Do not add any extra text, explanations, or markdown code fences.
                         Before responding, validate that the JSON parses (RFC8259). If invalid, fix it.
 
-                        """.formatted(draft.title(), draft.content());
+                        """.formatted(jsonFixerTool.draftToJsonForPrompt(draft));
 
         LlmUsageCollector usageCollector = new LlmUsageCollector();
-        ReviewedPost reviewed = ai
+        String reviewedJson = ai
                 .withLlmByRole("reviewer")
                 .withId("blog-post-reviewer")
                 .withPromptContributor(Personas.REVIEWER)
                 .withToolLoopInspectors(usageCollector)
-                .creating(ReviewedPost.class)
-                .fromPrompt(reviewPrompt);
+                .generateText(reviewPrompt);
+        ReviewedPostPayload reviewed = jsonFixerTool.parseReviewedPost(reviewedJson);
 
         UsageSnapshot reviewUsage = usageCollector.snapshot();
         usage.addUsage(reviewerModel, reviewUsage.promptTokens(), reviewUsage.completionTokens(), reviewUsage.calls());
